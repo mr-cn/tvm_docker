@@ -41,5 +41,6 @@ pip3 install --upgrade \
     Jinja2 \
     junitparser==2.4.2 \
     six \
+    jupyterlab \
     tornado \
     "ml_dtypes>=0.5.1"
