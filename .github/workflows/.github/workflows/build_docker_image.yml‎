@@ -1,0 +1,70 @@
+name: Build and Push Docker
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: '镜像名称 (例如: ci_gpu, ci_cpu)'
+        required: true
+        default: 'ci_cpu'
+        type: choice
+        options:
+          - ci_cpu
+          - ci_gpu
+          - ci_wasm
+          - ci_arm
+          - ci_hexagon
+          - ci_lint
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 检出代码
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. 深度清理磁盘空间 (替换了之前的 rm -rf 命令)
+      # 启用所有清理选项以最大化空间
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      # 3. 登录阿里云 Docker Registry
+      - name: Login to Repo
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      # 4. 执行 TVM 原生编译脚本
+      # 脚本会自动查找 docker/Dockerfile.<image_name> 并构建
+      - name: Build with docker/build.sh
+        run: |
+          chmod +x docker/build.sh
+          ./docker/build.sh ${{ inputs.image_name }}
+
+      # 5. 重新打标签并推送
+      - name: Tag and Push Image
+        run: |
+          # TVM 脚本构建出的原始标签通常是 tvm.<image_name>:latest
+          SOURCE_TAG="tvm.${{ inputs.image_name }}"
+          
+          # 构造阿里云目标标签
+          # 格式: registry/namespace/repo:tag
+          TARGET_TAG="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/tvm-${{ inputs.image_name }}:latest"
+          
+          echo "Retagging $SOURCE_TAG to $TARGET_TAG"
+          docker tag $SOURCE_TAG $TARGET_TAG
+          
+          echo "Pushing to Aliyun..."
+          docker push $TARGET_TAG
