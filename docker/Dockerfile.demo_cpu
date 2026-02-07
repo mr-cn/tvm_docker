@@ -1,0 +1,59 @@
+# Based on the CI CPU image
+# This image contains the compiled TVM and is ready for use/learning.
+
+# Argument to allow overriding the base image tag (default to latest)
+ARG BASE_IMAGE=tvm.ci_cpu:latest
+FROM ${BASE_IMAGE}
+
+# Switch to root to perform installations
+USER root
+
+# 1. Copy the current source code into the container
+# We copy to /opt/tvm which will be the TVM_HOME
+# This avoids conflicts if the user mounts their code to /workspace
+WORKDIR /opt/tvm
+COPY . /opt/tvm
+
+# 2. Build TVM
+# Clean up any existing build artifacts from the host if they were copied
+RUN rm -rf build && mkdir build
+
+WORKDIR /opt/tvm/build
+
+# Configure CMake
+# We use the configuration steps from docs/install/from_source.rst
+# Enable LLVM (which is available in ci_cpu) and Release build
+RUN cp ../cmake/config.cmake . && \
+    echo "set(CMAKE_BUILD_TYPE RelWithDebInfo)" >> config.cmake && \
+    echo "set(USE_LLVM \"llvm-config --ignore-libllvm --link-static\")" >> config.cmake && \
+    echo "set(HIDE_PRIVATE_SYMBOLS ON)" >> config.cmake && \
+    echo "set(USE_CUDA OFF)" >> config.cmake && \
+    echo "set(USE_VULKAN OFF)" >> config.cmake && \
+    echo "set(USE_OPENCL OFF)" >> config.cmake
+
+# Compile
+# Use nproc to use all available cores
+RUN cmake .. && cmake --build . --parallel $(nproc)
+
+# 3. Install Python bindings
+# a. Install tvm-ffi (Required)
+WORKDIR /opt/tvm/3rdparty/tvm-ffi
+RUN pip install .
+
+# b. Install tvm python package
+# Method 2 from docs: Install via pip local project
+WORKDIR /opt/tvm/python
+# Set TVM_LIBRARY_PATH so setup.py can find the shared library
+ENV TVM_LIBRARY_PATH=/opt/tvm/build
+RUN pip install -e .
+
+# 4. Final Setup
+# Set PYTHONPATH and TVM_HOME variables for convenience
+ENV TVM_HOME=/opt/tvm
+ENV PYTHONPATH=$TVM_HOME/python:$PYTHONPATH
+
+# Return to workspace root
+WORKDIR /workspace
+
+# Default command: Start Jupyter Lab
+CMD ["jupyter", "lab", "--allow-root", "--ip=0.0.0.0", "--no-browser", "--IdentityProvider.token=''", "--ServerApp.password=''", "--notebook-dir=/workspace"]

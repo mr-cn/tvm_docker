@@ -3,18 +3,14 @@ name: Build and Push Docker
 on:
   workflow_dispatch:
     inputs:
-      image_name:
-        description: '镜像名称 (例如: ci_gpu, ci_cpu)'
+      build_type:
+        description: '构建类型 (cpu 或 gpu)'
         required: true
-        default: 'ci_cpu'
+        default: 'cpu'
         type: choice
         options:
-          - ci_cpu
-          - ci_gpu
-          - ci_wasm
-          - ci_arm
-          - ci_hexagon
-          - ci_lint
+          - cpu
+          - gpu
 
 jobs:
   build-and-push:
@@ -24,9 +20,10 @@ jobs:
       # 1. 检出代码
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      # 2. 深度清理磁盘空间 (替换了之前的 rm -rf 命令)
-      # 启用所有清理选项以最大化空间
+      # 2. 深度清理磁盘空间
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
@@ -46,25 +43,44 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      # 4. 执行 TVM 原生编译脚本
-      # 脚本会自动查找 docker/Dockerfile.<image_name> 并构建
-      - name: Build with docker/build.sh
+      # 4. 执行构建脚本
+      - name: Build Images
         run: |
           chmod +x docker/build.sh
-          ./docker/build.sh ${{ inputs.image_name }}
+          TYPE="${{ inputs.build_type }}"
+          
+          echo "Selected build type: $TYPE"
+          
+          # Step A: Build Base CI Image (ci_cpu or ci_gpu)
+          CI_IMAGE="ci_${TYPE}"
+          echo ">>> Building Base Image: $CI_IMAGE"
+          ./docker/build.sh $CI_IMAGE
+          
+          # Step B: Build Demo Image (demo_cpu or demo_gpu)
+          DEMO_IMAGE="demo_${TYPE}"
+          echo ">>> Building Demo Image: $DEMO_IMAGE (based on $CI_IMAGE)"
+          # using --context-path . to include project root in context
+          ./docker/build.sh $DEMO_IMAGE --context-path .
 
       # 5. 重新打标签并推送
-      - name: Tag and Push Image
+      - name: Tag and Push Images
         run: |
-          # TVM 脚本构建出的原始标签通常是 tvm.<image_name>:latest
-          SOURCE_TAG="tvm.${{ inputs.image_name }}"
+          TYPE="${{ inputs.build_type }}"
+          CI_IMAGE="ci_${TYPE}"
+          DEMO_IMAGE="demo_${TYPE}"
           
-          # 构造阿里云目标标签
-          # 格式: registry/namespace/repo:tag
-          TARGET_TAG="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/tvm-${{ inputs.image_name }}:latest"
+          # Push CI Image
+          SOURCE_TAG_CI="tvm.${CI_IMAGE}"
+          TARGET_TAG_CI="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/tvm-${CI_IMAGE}:latest"
+          echo "Retagging $SOURCE_TAG_CI to $TARGET_TAG_CI"
+          docker tag $SOURCE_TAG_CI $TARGET_TAG_CI
+          echo "Pushing $TARGET_TAG_CI ..."
+          docker push $TARGET_TAG_CI
           
-          echo "Retagging $SOURCE_TAG to $TARGET_TAG"
-          docker tag $SOURCE_TAG $TARGET_TAG
-          
-          echo "Pushing to Aliyun..."
-          docker push $TARGET_TAG
+          # Push Demo Image
+          SOURCE_TAG_DEMO="tvm.${DEMO_IMAGE}"
+          TARGET_TAG_DEMO="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/tvm-${DEMO_IMAGE}:latest"
+          echo "Retagging $SOURCE_TAG_DEMO to $TARGET_TAG_DEMO"
+          docker tag $SOURCE_TAG_DEMO $TARGET_TAG_DEMO
+          echo "Pushing $TARGET_TAG_DEMO ..."
+          docker push $TARGET_TAG_DEMO
