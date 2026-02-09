@@ -43,44 +43,56 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      # 4. 执行构建脚本
-      - name: Build Images
+      # 4. Build and Push Images
+      - name: Build and Push Images
         run: |
           chmod +x docker/build.sh
           TYPE="${{ inputs.build_type }}"
-          
           echo "Selected build type: $TYPE"
           
-          # Step A: Build Base CI Image (ci_cpu or ci_gpu)
-          CI_IMAGE="ci_${TYPE}"
-          echo ">>> Building Base Image: $CI_IMAGE"
-          ./docker/build.sh $CI_IMAGE
+          # Define Tags
+          CI_IMAGE_NAME="ci_${TYPE}"
+          DEMO_IMAGE_NAME="demo_${TYPE}"
           
-          # Step B: Build Demo Image (demo_cpu or demo_gpu)
-          DEMO_IMAGE="demo_${TYPE}"
-          echo ">>> Building Demo Image: $DEMO_IMAGE (based on $CI_IMAGE)"
-          # using --context-path . to include project root in context
-          ./docker/build.sh $DEMO_IMAGE --context-path .
-
-      # 5. 重新打标签并推送
-      - name: Tag and Push Images
-        run: |
-          TYPE="${{ inputs.build_type }}"
-          CI_IMAGE="ci_${TYPE}"
-          DEMO_IMAGE="demo_${TYPE}"
+          FULL_TAG_CI="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/tvm-${CI_IMAGE_NAME}:latest"
+          FULL_TAG_DEMO="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/tvm-${DEMO_IMAGE_NAME}:latest"
           
-          # Push CI Image
-          SOURCE_TAG_CI="tvm.${CI_IMAGE}"
-          TARGET_TAG_CI="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/tvm-${CI_IMAGE}:latest"
-          echo "Retagging $SOURCE_TAG_CI to $TARGET_TAG_CI"
-          docker tag $SOURCE_TAG_CI $TARGET_TAG_CI
-          echo "Pushing $TARGET_TAG_CI ..."
-          docker push $TARGET_TAG_CI
+          echo "CI Image Target: $FULL_TAG_CI"
+          echo "Demo Image Target: $FULL_TAG_DEMO"
           
-          # Push Demo Image
-          SOURCE_TAG_DEMO="tvm.${DEMO_IMAGE}"
-          TARGET_TAG_DEMO="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/tvm-${DEMO_IMAGE}:latest"
-          echo "Retagging $SOURCE_TAG_DEMO to $TARGET_TAG_DEMO"
-          docker tag $SOURCE_TAG_DEMO $TARGET_TAG_DEMO
-          echo "Pushing $TARGET_TAG_DEMO ..."
-          docker push $TARGET_TAG_DEMO
+          # --- Step A: CI Image ---
+          
+          # 1. Try to pull existing CI image for cache
+          echo ">>> Pulling existing CI image for cache (if available)..."
+          docker pull $FULL_TAG_CI || true
+          
+          # 2. Build Base CI Image
+          echo ">>> Building Base Image: $CI_IMAGE_NAME"
+          # Pass the registry image as cache source
+          ./docker/build.sh $CI_IMAGE_NAME --cache-from $FULL_TAG_CI
+          
+          # 3. Retag and Push CI Image IMMEDIATELY
+          # This ensures the expensive build is saved even if the Demo build fails later.
+          SOURCE_TAG_CI="tvm.${CI_IMAGE_NAME}"
+          echo "Retagging $SOURCE_TAG_CI to $FULL_TAG_CI"
+          docker tag $SOURCE_TAG_CI $FULL_TAG_CI
+          echo "Pushing $FULL_TAG_CI ..."
+          docker push $FULL_TAG_CI
+          
+          # --- Step B: Demo Image ---
+          
+          # 4. Try to pull existing Demo image for cache
+          echo ">>> Pulling existing Demo image for cache (if available)..."
+          docker pull $FULL_TAG_DEMO || true
+          
+          # 5. Build Demo Image
+          echo ">>> Building Demo Image: $DEMO_IMAGE_NAME (based on $CI_IMAGE_NAME)"
+          # Pass both CI and Demo registry images as cache sources
+          ./docker/build.sh $DEMO_IMAGE_NAME --context-path . --cache-from $FULL_TAG_CI --cache-from $FULL_TAG_DEMO
+          
+          # 6. Retag and Push Demo Image
+          SOURCE_TAG_DEMO="tvm.${DEMO_IMAGE_NAME}"
+          echo "Retagging $SOURCE_TAG_DEMO to $FULL_TAG_DEMO"
+          docker tag $SOURCE_TAG_DEMO $FULL_TAG_DEMO
+          echo "Pushing $FULL_TAG_DEMO ..."
+          docker push $FULL_TAG_DEMO
